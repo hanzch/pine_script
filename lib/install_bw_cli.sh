@@ -1,11 +1,18 @@
 #!/bin/bash
+
+# 创建日志目录
+mkdir -p "$(pwd)/logs"
+
+# 设置日志文件
+LOG_FILE="$(pwd)/logs/raid_setup.log"
+
 echo "-------------------- 安装 Bitwarden CLI --------------------"
 
 # 安装依赖
 echo "正在更新软件包列表..."
-apt update
+apt update >> ${LOG_FILE} 2>&1
 echo "正在安装必要依赖..."
-apt install wget zip unzip -y
+apt install wget zip unzip -y >> ${LOG_FILE} 2>&1
 
 # 配置变量
 FILE_NAME="bw-linux-2024.12.0.zip"
@@ -131,3 +138,4 @@ fi
 echo "清理临时文件..."
 rm -rf bw-linux-2024.12.0*
 echo "安装完成！"
+exit 0
