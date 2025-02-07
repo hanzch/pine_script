@@ -130,6 +130,7 @@ update_ssh_config "UsePAM" "yes"
 
 # 验证SSH配置
 echo "正在验证SSH配置"
+sudo mkdir -p /run/sshd
 sudo sshd -t || handle_error "SSH配置无效"
 
 # 重启SSH服务（优化后的版本）
