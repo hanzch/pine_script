@@ -1,5 +1,7 @@
 echo "-------------------- Install bw cli -------------------- "
 
+apt update
+apt install wget unzip -y
 # 下载 CLI 包
 wget https://github.com/bitwarden/clients/releases/download/cli-v2024.12.0/bw-linux-2024.12.0.zip
 
@@ -24,9 +26,4 @@ bw sync
 # 检查登录状态
 bw status
 
-
-1.安装git 及基础库
-2.拉去公共模块
-安装或加载RAID
-安装bw-cli
-新用户并配置SSHD
+rm -f bw-linux-2024.12.0*
