@@ -1,12 +1,24 @@
 #!/bin/bash
 
+# 处理命令行参数
+MIRROR_URL=""
+if [ $# -eq 1 ]; then
+    # 检查参数是否以 http:// 或 https:// 开头
+    if [[ "$1" =~ ^https?:// ]]; then
+        MIRROR_URL="$1"
+        # 去除可能的结尾斜杠
+        MIRROR_URL="${MIRROR_URL%/}"
+    else
+        echo "错误：镜像 URL 必须以 http:// 或 https:// 开头"
+        exit 1
+    fi
+fi
+
 # 创建日志目录
 mkdir -p "$(pwd)/logs"
 
 # 设置日志文件
 LOG_FILE="$(pwd)/logs/raid_setup.log"
-
-echo "-------------------- 安装 Bitwarden CLI --------------------"
 
 # 安装依赖
 echo "正在更新软件包列表..."
@@ -16,7 +28,17 @@ apt install wget zip unzip -y >> ${LOG_FILE} 2>&1
 
 # 配置变量
 FILE_NAME="bw-linux-2024.12.0.zip"
-URL="https://github.com/bitwarden/clients/releases/download/cli-v2024.12.0/${FILE_NAME}"
+BASE_URL="https://github.com"
+REPO_PATH="/bitwarden/clients/releases/download/cli-v2024.12.0/${FILE_NAME}"
+
+# 构建完整的下载 URL
+if [ -n "$MIRROR_URL" ]; then
+    URL="${MIRROR_URL}${REPO_PATH}"
+    echo "使用镜像地址下载: ${URL}"
+else
+    URL="${BASE_URL}${REPO_PATH}"
+    echo "使用原始地址下载: ${URL}"
+fi
 
 # 下载函数
 download_file() {
