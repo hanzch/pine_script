@@ -1,7 +1,10 @@
 #!/bin/bash
 
+# 创建日志目录
+mkdir -p "$(pwd)/logs"
+
 # 设置日志文件
-LOG_FILE="./logs/raid_setup.log"
+LOG_FILE="$(pwd)/logs/raid_setup.log"
 
 # 默认配置
 DISK1="/dev/nvme1n1"
@@ -14,7 +17,6 @@ log() {
    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
    echo "$message" | tee -a "$LOG_FILE"
 }
-
 
 # 错误处理函数
 handle_error() {
@@ -38,7 +40,6 @@ cleanup_old_log() {
        rm -f "$LOG_FILE"
    fi
 }
-
 
 show_help() {
     echo "当前系统中的硬盘："
@@ -85,33 +86,42 @@ EOF
 # 检查root权限
 if [ "$EUID" -ne 0 ]; then
     log "请使用root权限运行此脚本"
+    exit 1
+fi
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    show_help
     exit 0
 fi
 
-# 参数解析
-while getopts "h:d1:d2:m:" opt; do
-   case $opt in
-       h) show_help ;;
-       d1) DISK1="$OPTARG" ;;
-       d2) DISK2="$OPTARG" ;;
-       m) MOUNT_POINT="$OPTARG" ;;
-       ?) show_help ;;
-   esac
-done
+# 检查参数数量
+if [ $# -lt 2 ]; then
+    echo "错误: 至少需要提供两个磁盘设备"
+    show_help
+    exit 1
+fi
 
+# 如果只有两个参数，设置磁盘设备
+if [ $# -eq 2 ]; then
+    DISK1="$1"
+    DISK2="$2"
+# 如果有三个参数，最后一个设置为挂载点
+elif [ $# -eq 3 ]; then
+    DISK1="$1"
+    DISK2="$2"
+    MOUNT_POINT="$3"
+fi
 
 check_existing_raid() {
     log "扫描现有 RAID 配置..."
 
-    # 首先检查 /proc/mdstat 是否已有活动的 RAID
+    # 检查是否存在现有RAID
     if grep -q "${RAID_DEVICE#/dev/}" /proc/mdstat; then
         log "检测到 RAID 设备 $RAID_DEVICE 已处于活动状态"
-        mdadm --detail "$RAID_DEVICE" &>/dev/null
-        if [ $? -eq 0 ]; then
+        if mdadm --detail "$RAID_DEVICE" &>/dev/null; then
             local raid_status=$(mdadm --detail "$RAID_DEVICE" | grep "State :" | awk '{print $3}')
             log "RAID 状态: $raid_status"
-            log "RAID 已经正常运行，无需重新组装"
-            exit 0
+            return 0  # 返回0表示找到了正常运行的RAID
         fi
     fi
 
@@ -153,7 +163,7 @@ check_existing_raid() {
             log "成功组装 RAID 设备 $RAID_DEVICE"
             local raid_status=$(mdadm --detail "$RAID_DEVICE" | grep "State :" | awk '{print $3}')
             log "RAID 状态: $raid_status"
-            exit 0
+            return 0
         else
             log "组装 RAID 设备失败"
             log "当前 RAID 状态:"
@@ -170,9 +180,8 @@ check_existing_raid() {
     fi
 
     log "未发现现有 RAID 配置，可以继续创建新的 RAID"
-    return 0
+    return 1
 }
-
 
 # 磁盘检查
 check_disks() {
@@ -260,30 +269,66 @@ check_mount_point() {
 }
 
 # 最终检查函数
+# 最终检查函数
 final_check() {
-   log "执行最终检查..."
+    log "执行最终检查..."
+
+    # 首先检查RAID设备是否存在
+    if [ ! -b "$RAID_DEVICE" ]; then
+       handle_error "RAID设备 $RAID_DEVICE 不存在"
+    fi   # 这里是正确的写法，之前有多余的 }
 
    # 检查RAID状态
-   if ! mdadm --detail "$RAID_DEVICE" | grep -q "State : active"; then
-       handle_error "RAID状态异常"
-   fi
+   raid_state=$(mdadm --detail "$RAID_DEVICE" | grep "State :" | awk '{print $3, $4, $5}')
+   log "当前RAID状态: $raid_state"
 
-   # 检查挂载状态
-   if ! mount | grep -q "$RAID_DEVICE on $MOUNT_POINT"; then
+    # 检查状态
+    case "$raid_state" in
+        *"clean"*|*"active"*|*"resyncing"*)
+            # 标记是否有特殊情况
+            has_special_condition=false
+
+            if [[ "$raid_state" == *"read-only"* ]]; then
+                log "警告: RAID当前处于只读状态，请稍后使用 'mdadm --detail $RAID_DEVICE' 确认状态"
+                has_special_condition=true
+            fi
+
+            if [[ "$raid_state" == *"degraded"* ]]; then
+                log "警告: RAID当前处于降级状态，请稍后使用 'mdadm --detail $RAID_DEVICE' 检查具体情况"
+                has_special_condition=true
+            fi
+
+            if [[ "$raid_state" == *"resyncing"* ]]; then
+                log "提示: RAID正在重新同步，请稍后使用 'mdadm --detail $RAID_DEVICE' 确认同步是否完成"
+                has_special_condition=true
+            fi
+
+            # 如果没有特殊情况，输出正常状态信息
+            if [ "$has_special_condition" = false ]; then
+                log "RAID状态正常，可以正常使用"
+            fi
+            ;;
+        *)
+            handle_error "RAID状态异常: $raid_state"
+            ;;
+    esac
+
+    # 检查挂载状态
+    if ! mount | grep -q "$RAID_DEVICE on $MOUNT_POINT"; then
        handle_error "挂载点检查失败"
-   fi
+    fi
 
-   # 检查文件系统
-   if ! df -h "$MOUNT_POINT"; then
+    # 检查文件系统
+    if ! df -h "$MOUNT_POINT"; then
        handle_error "文件系统检查失败"
-   fi
+    fi
 
-   log "所有检查通过"
+    log "所有检查通过"
 
-   # 显示最终状态
-   echo "RAID 1设置完成！"
-   echo "挂载点: $MOUNT_POINT"
-   echo "详细日志请查看: $LOG_FILE"
+    # 显示最终状态
+    echo "RAID 1设置完成！"
+    echo "挂载点: $MOUNT_POINT"
+    echo "详细日志请查看: $LOG_FILE"
 }
 
 # 主要处理流程
@@ -293,10 +338,13 @@ main() {
 
    # 检查是否存在现有 RAID
    if check_existing_raid; then
-       log "已成功恢复现有 RAID 配置"
+       log "现有 RAID 配置正常运行"
        final_check
        exit 0
    fi
+
+   # 如果没有现有RAID,继续创建新的RAID
+   log "开始创建新的RAID配置..."
 
    # 检查磁盘
    check_disks
@@ -313,7 +361,13 @@ main() {
    mdadm --create "$RAID_DEVICE" --level=1 --raid-devices=2 "$DISK1" "$DISK2" || \
        handle_error "创建RAID失败"
 
+   # 等待RAID设备就绪
+   log "等待RAID设备就绪..."
+   sleep 5
+
    # 创建文件系统
+   log "等待文件系统准备就绪..."
+   sleep 3
    log "创建文件系统..."
    mkfs.ext4 "$RAID_DEVICE" || handle_error "创建文件系统失败"
 
@@ -332,6 +386,7 @@ main() {
 
    # 保存RAID配置
    log "保存RAID配置..."
+   mkdir -p /etc/mdadm
    mdadm --detail --scan >> /etc/mdadm/mdadm.conf || handle_error "保存RAID配置失败"
    update-initramfs -u || handle_error "更新initramfs失败"
 
