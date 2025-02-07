@@ -329,69 +329,74 @@ final_check() {
     echo "RAID 1设置完成！"
     echo "挂载点: $MOUNT_POINT"
     echo "详细日志请查看: $LOG_FILE"
+
+    return 0
 }
 
 # 主要处理流程
 main() {
-   # 清理旧日志
-   cleanup_old_log
+    # 清理旧日志
+    cleanup_old_log
 
-   # 检查是否存在现有 RAID
-   if check_existing_raid; then
+    # 检查是否存在现有 RAID
+    if check_existing_raid; then
        log "现有 RAID 配置正常运行"
        final_check
        exit 0
-   fi
+    fi
 
-   # 如果没有现有RAID,继续创建新的RAID
-   log "开始创建新的RAID配置..."
+    # 如果没有现有RAID,继续创建新的RAID
+    log "开始创建新的RAID配置..."
 
-   # 检查磁盘
-   check_disks
+    # 检查磁盘
+    check_disks
 
-   # 检查挂载点
-   check_mount_point
+    # 检查挂载点
+    check_mount_point
 
-   # 创建挂载点
-   log "创建挂载点 $MOUNT_POINT"
-   mkdir -p "$MOUNT_POINT" || handle_error "创建挂载点失败"
+    # 创建挂载点
+    log "创建挂载点 $MOUNT_POINT"
+    mkdir -p "$MOUNT_POINT" || handle_error "创建挂载点失败"
 
-   # 创建RAID 1阵列
-   log "创建RAID 1阵列..."
-   mdadm --create "$RAID_DEVICE" --level=1 --raid-devices=2 "$DISK1" "$DISK2" || \
+    # 创建RAID 1阵列
+    log "创建RAID 1阵列..."
+    mdadm --create "$RAID_DEVICE" --level=1 --raid-devices=2 "$DISK1" "$DISK2" || \
        handle_error "创建RAID失败"
 
-   # 等待RAID设备就绪
-   log "等待RAID设备就绪..."
-   sleep 5
+    # 等待RAID设备就绪
+    log "等待RAID设备就绪..."
+    sleep 5
 
-   # 创建文件系统
-   log "等待文件系统准备就绪..."
-   sleep 3
-   log "创建文件系统..."
-   mkfs.ext4 "$RAID_DEVICE" || handle_error "创建文件系统失败"
+    # 创建文件系统
+    log "等待文件系统准备就绪..."
+    sleep 3
+    log "创建文件系统..."
+    mkfs.ext4 "$RAID_DEVICE" || handle_error "创建文件系统失败"
 
-   # 获取UUID并更新fstab
-   UUID=$(blkid -s UUID -o value "$RAID_DEVICE")
-   echo "UUID=$UUID $MOUNT_POINT ext4 defaults 0 0" >> /etc/fstab || \
+    # 获取UUID并更新fstab
+    UUID=$(blkid -s UUID -o value "$RAID_DEVICE")
+    echo "UUID=$UUID $MOUNT_POINT ext4 defaults 0 0" >> /etc/fstab || \
        handle_error "更新fstab失败"
 
-   # 重载系统服务
-   log "重载系统服务..."
-   systemctl daemon-reload || handle_error "重载系统服务失败"
+    # 重载系统服务
+    log "重载系统服务..."
+    systemctl daemon-reload || handle_error "重载系统服务失败"
 
-   # 挂载RAID
-   log "挂载RAID..."
-   mount "$RAID_DEVICE" "$MOUNT_POINT" || handle_error "挂载失败"
+    # 挂载RAID
+    log "挂载RAID..."
+    mount "$RAID_DEVICE" "$MOUNT_POINT" || handle_error "挂载失败"
 
-   # 保存RAID配置
-   log "保存RAID配置..."
-   mkdir -p /etc/mdadm
-   mdadm --detail --scan >> /etc/mdadm/mdadm.conf || handle_error "保存RAID配置失败"
-   update-initramfs -u || handle_error "更新initramfs失败"
+    # 保存RAID配置
+    log "保存RAID配置..."
+    mkdir -p /etc/mdadm
+    mdadm --detail --scan >> /etc/mdadm/mdadm.conf || handle_error "保存RAID配置失败"
+    update-initramfs -u || handle_error "更新initramfs失败"
 
-   # 最终检查
-   final_check
+    # 最终检查
+    final_check
+
+    exit 0
+
 }
 
 # 执行主程序
