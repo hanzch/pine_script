@@ -114,21 +114,48 @@ fi
 
 check_existing_raid() {
     log "扫描现有 RAID 配置..."
-
-    # 检查是否存在现有RAID
-    if grep -q "${RAID_DEVICE#/dev/}" /proc/mdstat; then
-        log "检测到 RAID 设备 $RAID_DEVICE 已处于活动状态"
-        if mdadm --detail "$RAID_DEVICE" &>/dev/null; then
-            local raid_status=$(mdadm --detail "$RAID_DEVICE" | grep "State :" | awk '{print $3}')
-            log "RAID 状态: $raid_status"
-            return 0  # 返回0表示找到了正常运行的RAID
-        fi
-    fi
-
     local has_raid=false
     local raid_uuid=""
     local found_disks=()
 
+    # 首先检查是否已经有活动的RAID设备
+    if [ -b "$RAID_DEVICE" ]; then
+        if mdadm --detail "$RAID_DEVICE" &>/dev/null; then
+            local raid_status=$(mdadm --detail "$RAID_DEVICE" | grep "State :" | awk '{print $3}')
+            log "检测到活动的RAID设备 $RAID_DEVICE，状态: $raid_status"
+
+            # 检查文件系统和挂载情况
+            if ! blkid "$RAID_DEVICE" &>/dev/null; then
+                log "RAID设备存在但没有文件系统，创建文件系统..."
+                mkfs.ext4 "$RAID_DEVICE" || handle_error "创建文件系统失败"
+            fi
+
+            # 检查并创建挂载点
+            if [ ! -d "$MOUNT_POINT" ]; then
+                log "创建挂载点 $MOUNT_POINT"
+                mkdir -p "$MOUNT_POINT" || handle_error "创建挂载点失败"
+            fi
+
+            # 检查并更新fstab
+            if ! grep -q "$MOUNT_POINT" /etc/fstab; then
+                log "添加RAID设备到fstab..."
+                local UUID=$(blkid -s UUID -o value "$RAID_DEVICE")
+                echo "UUID=$UUID $MOUNT_POINT ext4 defaults 0 0" >> /etc/fstab || \
+                    handle_error "更新fstab失败"
+                systemctl daemon-reload
+            fi
+
+            # 检查并挂载
+            if ! mount | grep -q "$RAID_DEVICE on $MOUNT_POINT"; then
+                log "挂载RAID设备..."
+                mount "$MOUNT_POINT" || handle_error "挂载RAID设备失败"
+            fi
+
+            return 0
+        fi
+    fi
+
+    # 检查磁盘上是否存在RAID配置
     for disk in "$DISK1" "$DISK2"; do
         if mdadm --examine "$disk" &>/dev/null; then
             local disk_role=$(mdadm --examine "$disk" | grep "Device Role" | awk '{print $4}')
@@ -138,48 +165,69 @@ check_existing_raid() {
             found_disks+=("$disk")
 
             if [[ -n "$raid_uuid" && "$disk_uuid" != "$raid_uuid" ]]; then
-                log "错误：检测到磁盘属于不同的 RAID 阵列"
+                log "错误：检测到磁盘属于不同的RAID阵列"
                 log "磁盘 ${found_disks[*]} 不能一起使用"
-                exit 2
+                exit 1
             fi
 
             raid_uuid="$disk_uuid"
             has_raid=true
 
-            log "发现磁盘 $disk 属于 RAID$array_level 阵列 ($raid_uuid)"
+            log "发现磁盘 $disk 属于RAID$array_level 阵列 ($raid_uuid)"
         fi
     done
 
-    if $has_raid && [[ -n "$raid_uuid" ]]; then
-        log "发现现有 RAID 配置，尝试组装..."
+    if $has_raid; then
+        log "发现现有RAID配置，尝试组装..."
 
-        # 如果 RAID 已经在运行但不是完全正常状态，尝试停止它
-        if grep -q "${RAID_DEVICE#/dev/}" /proc/mdstat; then
-            log "停止现有 RAID 设备..."
+        # 如果RAID设备已存在但状态不正常，先停止它
+        if [ -b "$RAID_DEVICE" ]; then
+            log "停止现有RAID设备..."
             mdadm --stop "$RAID_DEVICE"
         fi
 
-        if mdadm --assemble "$RAID_DEVICE" --uuid="$raid_uuid"; then
-            log "成功组装 RAID 设备 $RAID_DEVICE"
-            local raid_status=$(mdadm --detail "$RAID_DEVICE" | grep "State :" | awk '{print $3}')
-            log "RAID 状态: $raid_status"
+        # 组装RAID
+        if mdadm --assemble "$RAID_DEVICE" "${found_disks[@]}"; then
+            log "成功组装RAID设备 $RAID_DEVICE"
+
+            # 确保文件系统存在
+            if ! blkid "$RAID_DEVICE" &>/dev/null; then
+                log "创建文件系统..."
+                mkfs.ext4 "$RAID_DEVICE" || handle_error "创建文件系统失败"
+            fi
+
+            # 检查并创建挂载点
+            if [ ! -d "$MOUNT_POINT" ]; then
+                log "创建挂载点 $MOUNT_POINT"
+                mkdir -p "$MOUNT_POINT" || handle_error "创建挂载点失败"
+            fi
+
+            # 检查并更新fstab
+            if ! grep -q "$MOUNT_POINT" /etc/fstab; then
+                log "添加RAID设备到fstab..."
+                local UUID=$(blkid -s UUID -o value "$RAID_DEVICE")
+                echo "UUID=$UUID $MOUNT_POINT ext4 defaults 0 0" >> /etc/fstab || \
+                    handle_error "更新fstab失败"
+                systemctl daemon-reload
+            fi
+
+            # 挂载设备
+            if ! mount | grep -q "$RAID_DEVICE on $MOUNT_POINT"; then
+                log "挂载RAID设备..."
+                mount "$MOUNT_POINT" || handle_error "挂载RAID设备失败"
+            fi
+
             return 0
         else
-            log "组装 RAID 设备失败"
-            log "当前 RAID 状态:"
+            log "组装RAID设备失败"
             mdadm --detail "$RAID_DEVICE" 2>&1 | while IFS= read -r line; do
                 log "  $line"
             done
-            log "建议执行以下步骤排查："
-            log "1. 检查 dmesg 输出是否有相关错误"
-            log "2. 验证磁盘权限和可用性"
-            log "3. 如需重新创建 RAID，请先清除现有配置："
-            log "   mdadm --zero-superblock ${found_disks[*]}"
-            exit 3
+            exit 1
         fi
     fi
 
-    log "未发现现有 RAID 配置，可以继续创建新的 RAID"
+    log "未发现现有RAID配置，可以继续创建新的RAID"
     return 1
 }
 
