@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # 创建日志目录
 mkdir -p "$(pwd)/logs"

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # 处理命令行参数
 MIRROR_URL=""
